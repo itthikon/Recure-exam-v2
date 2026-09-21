@@ -1,0 +1,192 @@
+{
+  "entities": {
+    "Teacher": {
+      "title": "Teacher",
+      "description": "Teacher and administrator accounts",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "email": { "type": "string" },
+        "name": { "type": "string" },
+        "role": { "type": "string" },
+        "password": { "type": "string" }
+      },
+      "required": ["email", "name"]
+    },
+    "Student": {
+      "title": "Student",
+      "description": "Student user profiles and exam credentials",
+      "type": "object",
+      "properties": {
+        "student_id": { "type": "string" },
+        "first_name": { "type": "string" },
+        "last_name": { "type": "string" },
+        "class_group": { "type": "string" }
+      },
+      "required": ["student_id"]
+    },
+    "Subject": {
+      "title": "Subject",
+      "description": "Academic subjects and courses",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "code": { "type": "string" },
+        "name": { "type": "string" },
+        "grade_level": { "type": "string" }
+      },
+      "required": ["name"]
+    },
+    "Exam": {
+      "title": "Exam",
+      "description": "Exams and quizzes configuration",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "subject_id": { "type": "string" },
+        "duration_minutes": { "type": "number" },
+        "status": { "type": "string" }
+      },
+      "required": ["title"]
+    },
+    "Question": {
+      "title": "Question",
+      "description": "Questions and choices belonging to an exam",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "exam_id": { "type": "string" },
+        "question_text": { "type": "string" }
+      },
+      "required": ["exam_id"]
+    },
+    "ExamResult": {
+      "title": "ExamResult",
+      "description": "Student score submissions and answers",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "exam_id": { "type": "string" },
+        "student_id": { "type": "string" },
+        "score": { "type": "number" }
+      },
+      "required": ["exam_id", "student_id"]
+    },
+    "CheatLog": {
+      "title": "CheatLog",
+      "description": "Proctoring violations and anti-cheat event logs",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "student_id": { "type": "string" },
+        "exam_id": { "type": "string" },
+        "violation_type": { "type": "string" }
+      },
+      "required": ["student_id", "exam_id"]
+    },
+    "Announcement": {
+      "title": "Announcement",
+      "description": "Announcements and broadcast news",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "content": { "type": "string" }
+      },
+      "required": ["title"]
+    },
+    "Discussion": {
+      "title": "Discussion",
+      "description": "Student and teacher question/discussion threads",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "message": { "type": "string" }
+      },
+      "required": ["message"]
+    },
+    "PopupMessage": {
+      "title": "PopupMessage",
+      "description": "Real-time alerts sent to exam takers",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "text": { "type": "string" }
+      },
+      "required": ["text"]
+    },
+    "LockedStudent": {
+      "title": "LockedStudent",
+      "description": "Locked students pending proctor unlock",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "student_id": { "type": "string" },
+        "exam_id": { "type": "string" }
+      },
+      "required": ["student_id"]
+    },
+    "LiveSession": {
+      "title": "LiveSession",
+      "description": "Live active examination sessions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "student_id": { "type": "string" },
+        "exam_id": { "type": "string" }
+      },
+      "required": ["student_id", "exam_id"]
+    }
+  },
+  "firestore": {
+    "/teachers/{teacherId}": {
+      "schema": "Teacher",
+      "description": "Collection of teachers and administrative accounts"
+    },
+    "/students/{studentId}": {
+      "schema": "Student",
+      "description": "Collection of students registered in the system"
+    },
+    "/subjects/{subjectId}": {
+      "schema": "Subject",
+      "description": "Collection of academic subjects"
+    },
+    "/exams/{examId}": {
+      "schema": "Exam",
+      "description": "Collection of exams and quizzes"
+    },
+    "/questions/{questionId}": {
+      "schema": "Question",
+      "description": "Collection of exam question items"
+    },
+    "/exam_results/{resultId}": {
+      "schema": "ExamResult",
+      "description": "Collection of submitted exam answers and grading results"
+    },
+    "/cheat_logs/{logId}": {
+      "schema": "CheatLog",
+      "description": "Collection of cheating and proctor violation logs"
+    },
+    "/announcements/{announcementId}": {
+      "schema": "Announcement",
+      "description": "Collection of announcements"
+    },
+    "/discussions/{discussionId}": {
+      "schema": "Discussion",
+      "description": "Collection of discussion messages"
+    },
+    "/popup_messages/{popupId}": {
+      "schema": "PopupMessage",
+      "description": "Real-time popup messages to students"
+    },
+    "/locked_students/{lockId}": {
+      "schema": "LockedStudent",
+      "description": "Collection of locked students"
+    },
+    "/live_sessions/{sessionId}": {
+      "schema": "LiveSession",
+      "description": "Collection of active live sessions"
+    }
+  }
+}
