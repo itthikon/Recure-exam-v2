@@ -60,6 +60,7 @@ export const AnswerSheetScanner: React.FC<AnswerSheetScannerProps> = ({ exams, s
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [isSaved, setIsSaved] = useState<boolean>(false);
   const [selectedStudentOverride, setSelectedStudentOverride] = useState<string>('');
+  const [targetFullScore, setTargetFullScore] = useState<number>(10);
 
   // Camera handling
   const [cameraActive, setCameraActive] = useState<boolean>(false);
@@ -589,6 +590,9 @@ export const AnswerSheetScanner: React.FC<AnswerSheetScannerProps> = ({ exams, s
       }
 
       setScanResult(data);
+      if (data.maxScore) {
+        setTargetFullScore(data.maxScore);
+      }
       if (data.matchedStudent) {
         setSelectedStudentOverride(data.matchedStudent.student_id);
       } else if (data.detectedStudentId) {
@@ -609,22 +613,28 @@ export const AnswerSheetScanner: React.FC<AnswerSheetScannerProps> = ({ exams, s
     }
   };
 
-  // Save Graded Result to Database
+  // Save Graded Result to Database with Score Proportion & Scaling
   const handleSaveResult = async (resultToSave: any) => {
     const sId = selectedStudentOverride || resultToSave.detectedStudentId || 'STD_UNKNOWN';
     const foundStu = students.find(s => String(s.student_id) === String(sId));
     const sName = foundStu ? foundStu.name : (resultToSave.detectedStudentName || 'นักเรียน (สแกน OMR)');
 
+    const rawScore = resultToSave.score;
+    const rawMax = resultToSave.maxScore || 30;
+    const scaledScore = rawMax > 0 ? Math.round(((rawScore / rawMax) * targetFullScore) * 100) / 100 : rawScore;
+
     const payload = {
       student_id: sId,
       student_name: sName,
       exam_id: selectedExamId || resultToSave.examId || 'EX-OMR-STD',
-      score: resultToSave.score,
-      total_score: resultToSave.maxScore,
-      answers: resultToSave.itemAnalysis.reduce((acc: any, cur: any) => {
+      score: scaledScore,
+      total_score: targetFullScore,
+      raw_score: rawScore,
+      max_score: rawMax,
+      answers: resultToSave.itemAnalysis ? resultToSave.itemAnalysis.reduce((acc: any, cur: any) => {
         acc[cur.questionNum] = cur.markedChoice;
         return acc;
-      }, {}),
+      }, {}) : {},
       status: 'completed'
     };
 
@@ -1345,6 +1355,61 @@ export const AnswerSheetScanner: React.FC<AnswerSheetScannerProps> = ({ exams, s
               {previewImage && (
                 <img src={previewImage} alt="Scanned sheet" className="w-16 h-20 object-cover rounded border border-slate-600 shadow" />
               )}
+            </div>
+          </div>
+
+          {/* SCORE PROPORTION & SCALING CARD (ปรับสัดส่วนคะแนน) */}
+          <div className="bg-slate-800/90 border border-cyan-500/40 rounded-xl p-5 space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-700/60 pb-3">
+              <span className="text-xs font-bold text-cyan-300 uppercase tracking-wider flex items-center gap-1.5">
+                <Settings className="w-4 h-4 text-cyan-400" />
+                ตั้งค่าสัดส่วนคะแนน / น้ำหนักคะแนนเต็มเพื่อบันทึกเข้าระบบ (Score Proportion & Weight Scaling)
+              </span>
+              <span className="text-xs text-slate-300 font-mono">
+                คะแนนดิบ: <strong className="text-emerald-400">{scanResult.score}</strong> / {scanResult.maxScore} ข้อ
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-center">
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                  คะแนนเต็มตามสัดส่วนที่ต้องการ (Target Full Score / Weight):
+                </label>
+                <div className="flex gap-2 items-center">
+                  <input
+                    type="number"
+                    min="1"
+                    max="1000"
+                    value={targetFullScore}
+                    onChange={(e) => setTargetFullScore(Number(e.target.value) || 10)}
+                    className="w-full bg-slate-900 border border-cyan-500/60 rounded-lg px-3 py-2 text-sm font-bold text-white focus:outline-none focus:ring-1 focus:ring-cyan-400"
+                  />
+                  <div className="flex gap-1 flex-shrink-0">
+                    {[10, 20, 30, 50, 100].map((preset) => (
+                      <button
+                        key={preset}
+                        onClick={() => setTargetFullScore(preset)}
+                        className={`px-2 py-1.5 rounded text-[11px] font-bold cursor-pointer transition-all ${targetFullScore === preset ? 'bg-cyan-500 text-slate-950 font-extrabold shadow' : 'bg-slate-900 text-slate-300 hover:bg-slate-700'}`}
+                      >
+                        {preset}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-slate-900/90 border border-emerald-500/40 rounded-xl p-3 text-center">
+                <span className="text-[11px] font-semibold text-slate-400 block">คะแนนหลังปรับสัดส่วนที่จะบันทึก (Scaled Score)</span>
+                <div className="text-2xl font-black text-emerald-400 mt-0.5">
+                  {(scanResult.maxScore > 0 ? Math.round(((scanResult.score / scanResult.maxScore) * targetFullScore) * 100) / 100 : scanResult.score).toFixed(2)}
+                  <span className="text-xs font-normal text-slate-400"> / {targetFullScore} คะแนน</span>
+                </div>
+              </div>
+
+              <div className="text-xs text-slate-400 space-y-1 bg-slate-900/50 p-3 rounded-xl border border-slate-700/60">
+                <p className="font-semibold text-slate-300">ℹ️ หลักการคำนวณสัดส่วน:</p>
+                <p>ระบบจะเทียบสัดส่วนจาก (คะแนนดิบ ÷ คะแนนเต็มดิบ) × คะแนนเต็มตามสัดส่วน แล้วบันทึกลงฐานข้อมูลผลสอบและรายงานผลอัตโนมัติ</p>
+              </div>
             </div>
           </div>
 

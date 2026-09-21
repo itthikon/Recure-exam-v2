@@ -1335,6 +1335,8 @@ async function startServer() {
           if (error.message?.includes('API key') || error.message?.includes('Invalid API key') || error.message?.includes('JWT')) {
             console.warn('[Supabase] Invalid API key detected in exam-results. Disabling Supabase.');
             useSupabase = false;
+          } else if (error.message?.includes('Could not find the table') || error.message?.includes('schema cache') || error.code === 'PGRST204') {
+            console.warn(`[Supabase] Table 'exam_results' not found in Supabase schema cache. Using local durable JSON storage fallback.`);
           } else {
             console.error('Supabase exam results fetch error:', error.message);
           }
@@ -1956,6 +1958,12 @@ ${answerKeyPrompt}
     // Attempt 1: Standard upsert
     let { error } = await supabase.from(table).upsert(normalized);
     if (!error) return { count: normalized.length, error: null };
+
+    // If table not found in Supabase schema cache
+    if (error && (error.message?.includes('Could not find the table') || error.message?.includes('schema cache') || error.code === 'PGRST204')) {
+      console.warn(`[Supabase] Table '${table}' not found in schema cache. Falling back to local durable storage.`);
+      return { count: normalized.length, error: null };
+    }
 
     // Attempt 2: If UUID syntax error on id, strip non-UUID id fields
     if (error && (error.message?.includes('uuid') || error.code === '22P02')) {
