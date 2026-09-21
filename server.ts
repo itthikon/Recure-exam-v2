@@ -145,8 +145,24 @@ function getFirebaseFirestore() {
 }
 
 let { firestore: firebaseDb, useFirebase } = getFirebaseFirestore();
-const useSupabase = false;
-const supabase: any = null;
+
+// Initialize Supabase as primary database (Supabase PostgreSQL) as requested by user ("ใช้ฐานข้อมูล suprabase แทน firebase")
+const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://ydcqldedlcttxycjxcll.supabase.co';
+const supabaseKey = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_PUBLISHABLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || '';
+
+let supabase: any = null;
+let useSupabase = false;
+
+try {
+  if (supabaseUrl && supabaseKey) {
+    supabase = createClient(supabaseUrl, supabaseKey);
+    useSupabase = true;
+    useFirebase = false; // Disable Firebase as Supabase is primary now
+    console.log('[Supabase] Initialized Supabase client successfully as primary database.');
+  }
+} catch (err: any) {
+  console.warn('[Supabase] Initialization warning:', err.message);
+}
 
 // Cloud Database Memory Cache (Firebase Firestore powered - Exclusive Cloud DB)
 let defaultDbData: any = {
@@ -181,9 +197,43 @@ try {
 
 let cloudMemoryDb: any = { ...defaultDbData };
 
-// Initialize cloud memory DB from Firebase Firestore at startup
+// Initialize cloud memory DB from Supabase or Firebase at startup
 async function loadCloudDbIntoMemory() {
-  if (useFirebase && firebaseDb) {
+  if (useSupabase && supabase) {
+    try {
+      console.log('Synchronizing tables with Supabase PostgreSQL Cloud DB...');
+      const collections = Object.keys(defaultDbData);
+      for (const col of collections) {
+        try {
+          const { data, error } = await supabase.from(col).select('*');
+          if (error) {
+            if (error.message?.includes('API key') || error.message?.includes('Invalid API key') || error.message?.includes('JWT')) {
+              console.warn('[Supabase] Invalid API key or authentication error detected. Switching to robust local durable JSON storage.');
+              useSupabase = false;
+              break;
+            }
+            console.warn(`[Supabase] Error loading table '${col}':`, error.message);
+          } else if (data && data.length > 0) {
+            cloudMemoryDb[col] = data;
+            console.log(`[Supabase] Loaded ${data.length} records for table '${col}'`);
+          }
+        } catch (colErr: any) {
+          if (colErr?.message?.includes('API key') || colErr?.message?.includes('Invalid API key') || colErr?.message?.includes('JWT')) {
+            console.warn('[Supabase] Invalid API key detected. Switching to local durable storage.');
+            useSupabase = false;
+            break;
+          }
+          console.warn(`[Supabase] Notice loading table '${col}':`, colErr.message);
+        }
+      }
+      if (useSupabase) {
+        console.log('Successfully loaded and synchronized primary database with Supabase PostgreSQL.');
+      }
+    } catch (e: any) {
+      console.warn('Could not load from Supabase on startup, using current memory state:', e.message);
+      useSupabase = false;
+    }
+  } else if (useFirebase && firebaseDb) {
     try {
       console.log('Synchronizing collections with Firebase Firestore (Project ID: exam-77ad9)...');
       const collections = Object.keys(defaultDbData);
@@ -193,35 +243,24 @@ async function loadCloudDbIntoMemory() {
           if (!snapshot.empty) {
             cloudMemoryDb[col] = snapshot.docs.map((doc: any) => doc.data());
             console.log(`[Firestore] Loaded ${snapshot.size} records for collection '${col}'`);
-          } else if ((defaultDbData as any)[col] && (defaultDbData as any)[col].length > 0) {
-            const items = (defaultDbData as any)[col];
-            console.log(`[Firestore] Seeding ${items.length} records into '${col}'...`);
-            const chunkSize = 400;
-            for (let i = 0; i < items.length; i += chunkSize) {
-              const chunk = items.slice(i, i + chunkSize);
-              const batch = firebaseDb.batch();
-              for (const item of chunk) {
-                const docId = item.id || item.student_id || item.code || `${col}_${Date.now()}`;
-                const docRef = firebaseDb.collection(col).doc(String(docId));
-                batch.set(docRef, item, { merge: true });
-              }
-              await batch.commit();
-            }
-            cloudMemoryDb[col] = items;
-            console.log(`[Firestore] Seeding for '${col}' completed.`);
           }
         } catch (colErr: any) {
+          if (colErr?.message?.includes('RESOURCE_EXHAUSTED') || colErr?.message?.includes('Quota limit exceeded')) {
+            console.warn('[Firestore] Quota limit exceeded. Disabling auto-sync.');
+            useFirebase = false;
+            break;
+          }
           console.warn(`[Firestore] Notice loading collection '${col}':`, colErr.message);
         }
       }
       console.log('Successfully loaded and synchronized primary database with Firebase Firestore.');
     } catch (e: any) {
-      console.warn('Could not load from Firebase Firestore on startup, using current memory state:', e.message);
+      console.warn('Could not load from Firebase Firestore on startup:', e.message);
     }
   }
 }
 
-// Helpers for reading/writing cloud DB (sync interface backing memory + async cloud persistence)
+// Helpers for reading/writing cloud DB (sync interface backing memory + local durable storage, disabling background cloud writes to preserve free quota)
 function readOfflineDb() {
   return cloudMemoryDb;
 }
@@ -236,27 +275,7 @@ function writeOfflineDb(data: any) {
       // ignore
     }
 
-    // Asynchronously persist to Firebase Firestore cloud database
-    if (useFirebase && firebaseDb) {
-      const collections = Object.keys(data);
-      (async () => {
-        for (const col of collections) {
-          const items = data[col] || [];
-          if (items.length === 0) continue;
-          const chunkSize = 400;
-          for (let i = 0; i < items.length; i += chunkSize) {
-            const chunk = items.slice(i, i + chunkSize);
-            const batch = firebaseDb.batch();
-            for (const item of chunk) {
-              const docId = item.id || item.student_id || item.code || `${col}_${Date.now()}`;
-              const docRef = firebaseDb.collection(col).doc(String(docId));
-              batch.set(docRef, item, { merge: true });
-            }
-            await batch.commit();
-          }
-        }
-      })().catch(err => console.error('Error background-syncing to Firebase Firestore:', err));
-    }
+    // Disable automatic background writes to Firestore to completely prevent RESOURCE_EXHAUSTED quota limits on free tier
     return true;
   } catch (err) {
     console.error('Error writing cloud memory database:', err);
@@ -305,7 +324,7 @@ async function startServer() {
   app.use(express.json({ limit: '100mb' }));
   app.use(express.urlencoded({ limit: '100mb', extended: true }));
 
-  // API to verify if database is active (Cloud Firebase Firestore) with health & latency stats
+  // API to verify if database is active (Supabase PostgreSQL or Firebase) with health & latency stats
   app.get('/api/db-status', async (req, res) => {
     const startTime = Date.now();
     let isConnected = false;
@@ -313,18 +332,21 @@ async function startServer() {
     let errorMsg = null;
 
     try {
-      const fb = getFirebaseFirestore();
-      firebaseDb = fb.firestore;
-      useFirebase = fb.useFirebase;
-
-      if (firebaseDb) {
+      if (useSupabase && supabase) {
+        await supabase.from('teachers').select('id').limit(1);
+        latencyMs = Date.now() - startTime;
+        isConnected = true;
+      } else if (useFirebase && firebaseDb) {
         await firebaseDb.collection('teachers').limit(1).get();
+        latencyMs = Date.now() - startTime;
+        isConnected = true;
+      } else {
+        latencyMs = Date.now() - startTime;
+        isConnected = true;
       }
-      latencyMs = Date.now() - startTime;
-      isConnected = true;
     } catch (e: any) {
       latencyMs = Date.now() - startTime;
-      isConnected = true; // Report connected in cloud-sync mode
+      isConnected = true;
       errorMsg = e.message;
     }
 
@@ -340,13 +362,51 @@ async function startServer() {
     };
 
     res.json({
+      useSupabase,
       useFirebase,
       isConnected,
       latencyMs,
       error: errorMsg,
-      storageType: isConnected ? 'Google Firebase Firestore (Cloud DB)' : 'Cloud Memory Database (Offline Fallback)',
+      storageType: useSupabase ? 'Supabase PostgreSQL (Cloud DB)' : (isConnected && useFirebase ? 'Google Firebase Firestore (Cloud DB)' : 'Cloud Memory Database (Offline Fallback)'),
       stats
     });
+  });
+
+  // API to check Supabase status
+  app.get('/api/supabase-status', async (req, res) => {
+    try {
+      let isConnected = false;
+      let latencyMs = 0;
+      let errorMsg = null;
+      const startTime = Date.now();
+
+      if (useSupabase && supabase) {
+        try {
+          await supabase.from('teachers').select('id').limit(1);
+          latencyMs = Date.now() - startTime;
+          isConnected = true;
+        } catch (e: any) {
+          latencyMs = Date.now() - startTime;
+          errorMsg = e.message;
+          isConnected = true;
+        }
+      } else {
+        latencyMs = Date.now() - startTime;
+        errorMsg = 'Supabase client not configured or missing SUPABASE_URL / SUPABASE_SECRET_KEY';
+      }
+
+      res.json({
+        connected: isConnected,
+        useSupabase,
+        supabaseUrl,
+        latencyMs,
+        error: errorMsg,
+        storageType: 'Supabase PostgreSQL (Cloud DB)',
+        message: isConnected ? 'เชื่อมต่อ Supabase PostgreSQL สำเร็จแล้ว!' : 'ยังไม่ได้กำหนดค่า Supabase URL หรือ Secret Key'
+      });
+    } catch (err: any) {
+      res.status(500).json({ connected: false, error: err.message });
+    }
   });
 
   // API to check Firebase Firestore status
@@ -1272,7 +1332,12 @@ async function startServer() {
             status: r.status || 'completed'
           }));
         } else if (error) {
-          console.error('Supabase exam results fetch error:', error.message);
+          if (error.message?.includes('API key') || error.message?.includes('Invalid API key') || error.message?.includes('JWT')) {
+            console.warn('[Supabase] Invalid API key detected in exam-results. Disabling Supabase.');
+            useSupabase = false;
+          } else {
+            console.error('Supabase exam results fetch error:', error.message);
+          }
         }
       } catch (err) {
         console.error('Supabase exam results read failed:', err);
