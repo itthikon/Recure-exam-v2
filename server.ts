@@ -213,9 +213,9 @@ async function loadCloudDbIntoMemory() {
               break;
             }
             if (error.message?.includes('Could not find the table') || error.message?.includes('schema cache') || error.code === 'PGRST204') {
-              console.warn(`[Supabase] Table '${col}' not found in schema cache. Using local durable storage fallback.`);
+              // Table not yet created in Supabase; using local durable storage fallback silently
             } else {
-              console.warn(`[Supabase] Error loading table '${col}':`, error.message);
+              console.log(`[Supabase] Table '${col}' notice:`, error.message);
             }
           } else if (data && data.length > 0) {
             cloudMemoryDb[col] = data;
