@@ -443,8 +443,10 @@ function mergeCollections<T>(localList: T[] = [], cloudList: T[] = [], primaryKe
 }
 
 async function startServer() {
-  // Load database state from Firebase Firestore Cloud DB
-  await loadCloudDbIntoMemory();
+  // Load database state from Cloud DB in the background (non-blocking so server binds to port 3000 instantly)
+  loadCloudDbIntoMemory().catch(err => {
+    console.warn('Background cloud DB sync notice:', err.message);
+  });
 
   // Check if we are running in production and the frontend dist is not built
   if (process.env.NODE_ENV === 'production') {
@@ -936,8 +938,10 @@ async function startServer() {
 
     if (useSupabase && supabase) {
       try {
-        await supabase.from('subjects').delete().eq('id', id);
-        await supabase.from('subjects').delete().eq('code', id);
+        const { error: err1 } = await supabase.from('subjects').delete().eq('id', id);
+        if (err1) console.error('Supabase delete subject error (id):', err1);
+        const { error: err2 } = await supabase.from('subjects').delete().eq('code', id);
+        if (err2) console.error('Supabase delete subject error (code):', err2);
       } catch (err) {
         console.error('Supabase delete subject error:', err);
       }
@@ -1042,16 +1046,31 @@ async function startServer() {
     const id = req.params.id;
 
     const db = readOfflineDb();
-    db.exams = db.exams.filter((e: any) => e.id !== id);
-    db.questions = db.questions.filter((q: any) => q.exam_id !== id);
+    db.exams = (db.exams || []).filter((e: any) => e.id !== id);
+    db.questions = (db.questions || []).filter((q: any) => q.exam_id !== id);
+    db.exam_results = (db.exam_results || []).filter((r: any) => r.exam_id !== id);
+    db.cheat_logs = (db.cheat_logs || []).filter((c: any) => c.exam_id !== id);
+    db.discussions = (db.discussions || []).filter((d: any) => d.exam_id !== id);
     writeOfflineDb(db);
 
     if (useSupabase && supabase) {
       try {
-        await supabase.from('exams').delete().eq('id', id);
-        await supabase.from('questions').delete().eq('exam_id', id);
+        const { error: err1 } = await supabase.from('questions').delete().eq('exam_id', id);
+        if (err1) console.error('Supabase delete exam questions error:', err1);
+
+        const { error: err2 } = await supabase.from('exam_results').delete().eq('exam_id', id);
+        if (err2) console.error('Supabase delete exam results error:', err2);
+
+        const { error: err3 } = await supabase.from('cheat_logs').delete().eq('exam_id', id);
+        if (err3) console.error('Supabase delete exam cheat logs error:', err3);
+
+        const { error: err4 } = await supabase.from('discussions').delete().eq('exam_id', id);
+        if (err4) console.error('Supabase delete exam discussions error:', err4);
+
+        const { error: err5 } = await supabase.from('exams').delete().eq('id', id);
+        if (err5) console.error('Supabase delete exam record error:', err5);
       } catch (err) {
-        console.error('Supabase delete exam error:', err);
+        console.error('Supabase delete exam catch error:', err);
       }
     }
 
@@ -2362,12 +2381,20 @@ ${answerKeyPrompt}
     res.json({ success: true });
   });
 
-  app.delete('/api/popup-messages/:id', (req, res) => {
+  app.delete('/api/popup-messages/:id', async (req, res) => {
     const msgId = req.params.id;
     const db = readOfflineDb();
     if (db.popup_messages) {
       db.popup_messages = db.popup_messages.filter((m: any) => m.id !== msgId);
       writeOfflineDb(db);
+    }
+    if (useSupabase && supabase) {
+      try {
+        const { error } = await supabase.from('popup_messages').delete().eq('id', msgId);
+        if (error) console.error('Supabase delete popup_messages error:', error);
+      } catch (err) {
+        console.error('Supabase delete popup_messages catch error:', err);
+      }
     }
     res.json({ success: true });
   });
@@ -2408,12 +2435,20 @@ ${answerKeyPrompt}
     res.json(newAnc);
   });
 
-  app.delete('/api/announcements/:id', (req, res) => {
+  app.delete('/api/announcements/:id', async (req, res) => {
     const ancId = req.params.id;
     const db = readOfflineDb();
     if (db.announcements) {
       db.announcements = db.announcements.filter((a: any) => a.id !== ancId);
       writeOfflineDb(db);
+    }
+    if (useSupabase && supabase) {
+      try {
+        const { error } = await supabase.from('announcements').delete().eq('id', ancId);
+        if (error) console.error('Supabase delete announcements error:', error);
+      } catch (err) {
+        console.error('Supabase delete announcements catch error:', err);
+      }
     }
     res.json({ success: true });
   });
@@ -2500,12 +2535,20 @@ ${answerKeyPrompt}
     res.status(404).json({ error: 'ไม่พบหัวข้อการสนทนา' });
   });
 
-  app.delete('/api/discussions/:id', (req, res) => {
+  app.delete('/api/discussions/:id', async (req, res) => {
     const discId = req.params.id;
     const db = readOfflineDb();
     if (db.discussions) {
       db.discussions = db.discussions.filter((d: any) => d.id !== discId);
       writeOfflineDb(db);
+    }
+    if (useSupabase && supabase) {
+      try {
+        const { error } = await supabase.from('discussions').delete().eq('id', discId);
+        if (error) console.error('Supabase delete discussions error:', error);
+      } catch (err) {
+        console.error('Supabase delete discussions catch error:', err);
+      }
     }
     res.json({ success: true });
   });
@@ -2557,11 +2600,19 @@ ${answerKeyPrompt}
   });
 
   // ADMIN ENDPOINT: DELETE A TEACHER
-  app.delete('/api/teachers/:id', (req, res) => {
+  app.delete('/api/teachers/:id', async (req, res) => {
     const id = req.params.id;
     const db = readOfflineDb();
     db.teachers = db.teachers.filter((t: any) => t.id !== id);
     writeOfflineDb(db);
+    if (useSupabase && supabase) {
+      try {
+        const { error } = await supabase.from('teachers').delete().eq('id', id);
+        if (error) console.error('Supabase delete teachers error:', error);
+      } catch (err) {
+        console.error('Supabase delete teachers catch error:', err);
+      }
+    }
     res.json({ success: true });
   });
 
