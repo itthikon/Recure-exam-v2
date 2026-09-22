@@ -145,16 +145,17 @@ ALTER TABLE public.announcements ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.discussions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.popup_messages ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "Allow public all teachers" ON public.teachers FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow public all students" ON public.students FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow public all subjects" ON public.subjects FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow public all exams" ON public.exams FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow public all questions" ON public.questions FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow public all exam_results" ON public.exam_results FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow public all cheat_logs" ON public.cheat_logs FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow public all announcements" ON public.announcements FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow public all discussions" ON public.discussions FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow public all popup_messages" ON public.popup_messages FOR ALL USING (true) WITH CHECK (true);`;
+DO $$ 
+DECLARE
+  t text;
+BEGIN
+  FOR t IN SELECT unnest(ARRAY['teachers','students','subjects','exams','questions','exam_results','cheat_logs','announcements','discussions','popup_messages'])
+  LOOP
+    EXECUTE format('DROP POLICY IF EXISTS "Public access for %s" ON public.%I', t, t);
+    EXECUTE format('DROP POLICY IF EXISTS "Allow public all %s" ON public.%I', t, t);
+    EXECUTE format('CREATE POLICY "Public access for %s" ON public.%I FOR ALL USING (true) WITH CHECK (true)', t, t);
+  END LOOP;
+END $$;`;
 
 // Types
 interface Student {
@@ -727,17 +728,19 @@ export default function App() {
   };
 
   const handleSyncLocalToCloud = async () => {
-    if (!window.confirm('คุณต้องการส่งข้อมูลทั้งหมดในเครื่อง (นักเรียน, รายวิชา, ชุดข้อสอบ, ผลสอบ) ขึ้นไปยัง Cloud Supabase ใช่หรือไม่?')) return;
     setIsSyncingCloud(true);
     try {
       const res = await fetch('/api/db-sync-to-cloud', { method: 'POST' });
       const data = await res.json();
-      if (res.ok) {
+      if (res.ok && data.success) {
         showToast(data.message || 'ซิงค์ข้อมูลขึ้น Cloud Supabase เรียบร้อยแล้ว!', 'success');
         await handleTestDbConnection();
         await refreshData();
       } else {
-        showToast(data.error || 'ไม่สามารถซิงค์ขึ้น Cloud ได้', 'error');
+        showToast(data.message || data.error || 'ไม่สามารถซิงค์ขึ้น Cloud ได้', 'error');
+        if (data.hasMissingTables) {
+          setShowSqlGuide(true);
+        }
       }
     } catch (e) {
       showToast('เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์', 'error');
@@ -1960,67 +1963,7 @@ export default function App() {
   };
 
   // SQL schema generator copy helper
-  const sqlSchemaText = `-- คำสั่ง SQL สำหรับสร้างตารางเพื่อเปิดการเชื่อมต่อระบบคลาวด์ Supabase
-CREATE TABLE students (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  student_id VARCHAR(50) UNIQUE NOT NULL,
-  name VARCHAR(100) NOT NULL,
-  password VARCHAR(100) NOT NULL,
-  class_group VARCHAR(50) NOT NULL,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
-CREATE TABLE subjects (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  code VARCHAR(50) UNIQUE NOT NULL,
-  name VARCHAR(100) NOT NULL,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
-CREATE TABLE exams (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  subject_id UUID REFERENCES subjects(id) ON DELETE CASCADE,
-  title VARCHAR(200) NOT NULL,
-  type VARCHAR(50) NOT NULL,
-  duration INTEGER NOT NULL,
-  randomize BOOLEAN DEFAULT TRUE,
-  is_active BOOLEAN DEFAULT TRUE,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
-CREATE TABLE questions (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  exam_id UUID REFERENCES exams(id) ON DELETE CASCADE,
-  question_text TEXT NOT NULL,
-  options JSONB NOT NULL,
-  correct_index INTEGER NOT NULL,
-  points INTEGER DEFAULT 1,
-  explanation TEXT,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-);
-
-CREATE TABLE exam_results (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  student_id VARCHAR(50) NOT NULL,
-  student_name VARCHAR(100) NOT NULL,
-  exam_id UUID REFERENCES exams(id) ON DELETE CASCADE,
-  score NUMERIC(5,2) NOT NULL,
-  total_score NUMERIC(5,2) NOT NULL,
-  start_time TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  submit_time TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  answers JSONB NOT NULL,
-  status VARCHAR(20) DEFAULT 'completed'
-);
-
-CREATE TABLE cheat_logs (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  student_id VARCHAR(50) NOT NULL,
-  student_name VARCHAR(100) NOT NULL,
-  exam_id UUID REFERENCES exams(id) ON DELETE CASCADE,
-  violation_type VARCHAR(50) NOT NULL,
-  timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  details TEXT
-);`;
+  const sqlSchemaText = SUPABASE_SETUP_SQL;
 
   const copySqlToClipboard = () => {
     navigator.clipboard.writeText(sqlSchemaText);

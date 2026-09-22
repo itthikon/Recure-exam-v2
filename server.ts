@@ -264,6 +264,127 @@ async function loadCloudDbIntoMemory() {
   }
 }
 
+// ==========================================
+// HELPER FOR UPSERTING TABLES TO SUPABASE WITH FALLBACKS
+// ==========================================
+async function upsertTableWithFallback(table: string, rawItems: any[]) {
+  if (!rawItems || !Array.isArray(rawItems) || rawItems.length === 0) {
+    return { count: 0, error: null };
+  }
+
+  if (!supabase) {
+    return { count: 0, error: 'ไม่ได้เปิดใช้งานการเชื่อมต่อ Supabase' };
+  }
+
+  const isUUID = (str: any) => typeof str === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str);
+
+  // Step 1: Normalize fields for target table
+  const normalized = rawItems.map((item: any) => {
+    const copy = { ...item };
+    if (table === 'teachers') {
+      if (!copy.role) copy.role = 'teacher';
+    } else if (table === 'students') {
+      if (!copy.student_id) copy.student_id = copy.id || 'STD_' + Math.random().toString(36).substring(2, 7);
+      if (!copy.name) copy.name = 'นักเรียน';
+      if (!copy.class_group) copy.class_group = 'ม.4/1';
+      if (!copy.password) copy.password = '123456';
+    } else if (table === 'subjects') {
+      if (!copy.code) copy.code = copy.id || 'SUB_' + Math.random().toString(36).substring(2, 7);
+      if (!copy.name) copy.name = 'วิชาเรียน';
+    } else if (table === 'exams') {
+      copy.duration = Number(copy.duration || 30);
+      copy.randomize = Boolean(copy.randomize ?? true);
+      copy.is_active = Boolean(copy.is_active ?? true);
+      if (!copy.anti_cheat_level) copy.anti_cheat_level = 'strict';
+    } else if (table === 'questions') {
+      if (typeof copy.options === 'string') {
+        try { copy.options = JSON.parse(copy.options); } catch (e) { copy.options = [copy.options]; }
+      }
+      if (!Array.isArray(copy.options)) copy.options = [];
+      copy.correct_index = Number(copy.correct_index || 0);
+      copy.points = Number(copy.points || 1);
+    } else if (table === 'exam_results') {
+      copy.score = Number(copy.score || 0);
+      copy.total_score = Number(copy.total_score || copy.max_score || 0);
+      copy.max_score = Number(copy.max_score || copy.total_score || 0);
+      copy.percentage = Number(copy.percentage || (copy.total_score > 0 ? (copy.score / copy.total_score) * 100 : 0));
+      copy.submitted_at = copy.submitted_at || copy.submit_time || new Date().toISOString();
+      copy.submit_time = copy.submit_time || copy.submitted_at || new Date().toISOString();
+      copy.start_time = copy.start_time || copy.submit_time || new Date().toISOString();
+      if (typeof copy.answers === 'object') copy.answers = JSON.stringify(copy.answers);
+      if (typeof copy.details === 'object') copy.details = JSON.stringify(copy.details);
+      if (!copy.answers && copy.details) copy.answers = copy.details;
+      if (!copy.details && copy.answers) copy.details = copy.answers;
+      copy.status = copy.status || 'completed';
+      if (!copy.student_name) copy.student_name = 'นักเรียน';
+    } else if (table === 'cheat_logs') {
+      copy.violation_type = copy.violation_type || copy.reason || 'unknown';
+      copy.reason = copy.reason || copy.violation_type || 'unknown';
+      copy.timestamp = copy.timestamp || new Date().toISOString();
+      copy.details = copy.details || '';
+      if (!copy.student_name) copy.student_name = 'นักเรียน';
+    }
+    return copy;
+  });
+
+  // Attempt 1: Standard upsert
+  let { error } = await supabase.from(table).upsert(normalized);
+  if (!error) return { count: normalized.length, error: null };
+
+  // If table not found in Supabase schema cache
+  if (error && (error.message?.includes('Could not find the table') || error.message?.includes('schema cache') || error.code === 'PGRST204')) {
+    console.warn(`[Supabase] Table '${table}' not found in schema cache. Falling back to local durable storage.`);
+    return { count: 0, error: `ตาราง '${table}' ยังไม่ถูกสร้างใน Supabase Cloud (โปรดรันคำสั่ง SQL ใน Supabase Console)` };
+  }
+
+  // Attempt 2: If UUID syntax error on id, strip non-UUID id fields
+  if (error && (error.message?.includes('uuid') || error.code === '22P02')) {
+    const strippedIdItems = normalized.map((item: any) => {
+      const copy = { ...item };
+      if (copy.id && !isUUID(copy.id)) {
+        delete copy.id;
+      }
+      return copy;
+    });
+    const res2 = await supabase.from(table).upsert(strippedIdItems);
+    if (!res2.error) return { count: strippedIdItems.length, error: null };
+    error = res2.error;
+  }
+
+  // Attempt 3: If missing columns error, try minimal core schema
+  if (error && (error.message?.includes('column') || error.code === '42703' || error.code === 'PGRST204')) {
+    const minimalItems = normalized.map((item: any) => {
+      if (table === 'students') {
+        return { student_id: item.student_id, name: item.name, password: item.password, class_group: item.class_group };
+      }
+      if (table === 'teachers') {
+        return { email: item.email, name: item.name, password: item.password, role: item.role };
+      }
+      if (table === 'subjects') {
+        return { code: item.code, name: item.name };
+      }
+      if (table === 'exams') {
+        return { subject_id: item.subject_id, title: item.title, type: item.type, duration: item.duration, randomize: item.randomize, is_active: item.is_active };
+      }
+      if (table === 'questions') {
+        return { exam_id: item.exam_id, question_text: item.question_text, options: item.options, correct_index: item.correct_index, points: item.points };
+      }
+      if (table === 'exam_results') {
+        return { student_id: item.student_id, student_name: item.student_name, exam_id: item.exam_id, score: item.score, total_score: item.total_score, answers: item.answers, status: item.status };
+      }
+      if (table === 'cheat_logs') {
+        return { student_id: item.student_id, student_name: item.student_name, exam_id: item.exam_id, violation_type: item.violation_type, details: item.details };
+      }
+      return item;
+    });
+    const res3 = await supabase.from(table).upsert(minimalItems);
+    if (!res3.error) return { count: minimalItems.length, error: null };
+    error = res3.error;
+  }
+
+  return { count: 0, error: error ? error.message : 'เกิดข้อผิดพลาดในการบันทึกข้อมูลเข้า Supabase' };
+}
+
 // Helpers for reading/writing cloud DB (sync interface backing memory + local durable storage, disabling background cloud writes to preserve free quota)
 function readOfflineDb() {
   return cloudMemoryDb;
@@ -286,7 +407,7 @@ function writeOfflineDb(data: any) {
           const tablesOrder = ['teachers', 'students', 'subjects', 'exams', 'questions', 'exam_results', 'cheat_logs', 'announcements', 'discussions', 'popup_messages'];
           for (const table of tablesOrder) {
             if (Array.isArray(data[table]) && data[table].length > 0) {
-              await supabase.from(table).upsert(data[table]);
+              await upsertTableWithFallback(table, data[table]);
             }
           }
         } catch (syncErr) {
@@ -349,12 +470,24 @@ async function startServer() {
     let isConnected = false;
     let latencyMs = 0;
     let errorMsg = null;
+    let hasSchema = true;
 
     try {
       if (useSupabase && supabase) {
-        await supabase.from('teachers').select('id').limit(1);
+        const check = await supabase.from('teachers').select('id').limit(1);
         latencyMs = Date.now() - startTime;
-        isConnected = true;
+        if (check.error && (check.error.message?.includes('Could not find the table') || check.error.message?.includes('schema cache') || check.error.code === 'PGRST204')) {
+          isConnected = true;
+          hasSchema = false;
+          errorMsg = 'ตารางใน Supabase ยังไม่ถูกสร้าง โปรดรันคำสั่ง SQL ใน Supabase SQL Editor';
+        } else if (check.error) {
+          isConnected = false;
+          hasSchema = false;
+          errorMsg = check.error.message;
+        } else {
+          isConnected = true;
+          hasSchema = true;
+        }
       } else if (useFirebase && firebaseDb) {
         await firebaseDb.collection('teachers').limit(1).get();
         latencyMs = Date.now() - startTime;
@@ -384,8 +517,10 @@ async function startServer() {
       useSupabase,
       useFirebase,
       isConnected,
+      hasSchema,
       latencyMs,
       error: errorMsg,
+      supabaseUrl,
       storageType: useSupabase ? 'Supabase PostgreSQL (Cloud DB)' : (isConnected && useFirebase ? 'Google Firebase Firestore (Cloud DB)' : 'Cloud Memory Database (Offline Fallback)'),
       stats
     });
@@ -1912,127 +2047,6 @@ ${answerKeyPrompt}
   });
 
   // ==========================================
-  // HELPER FOR UPSERTING TABLES TO SUPABASE WITH FALLBACKS
-  // ==========================================
-  async function upsertTableWithFallback(table: string, rawItems: any[]) {
-    if (!rawItems || !Array.isArray(rawItems) || rawItems.length === 0) {
-      return { count: 0, error: null };
-    }
-
-    if (!supabase) {
-      return { count: 0, error: 'ไม่ได้เปิดใช้งานการเชื่อมต่อ Supabase' };
-    }
-
-    const isUUID = (str: any) => typeof str === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str);
-
-    // Step 1: Normalize fields for target table
-    const normalized = rawItems.map((item: any) => {
-      const copy = { ...item };
-      if (table === 'teachers') {
-        if (!copy.role) copy.role = 'teacher';
-      } else if (table === 'students') {
-        if (!copy.student_id) copy.student_id = copy.id || 'STD_' + Math.random().toString(36).substring(2, 7);
-        if (!copy.name) copy.name = 'นักเรียน';
-        if (!copy.class_group) copy.class_group = 'ม.4/1';
-        if (!copy.password) copy.password = '123456';
-      } else if (table === 'subjects') {
-        if (!copy.code) copy.code = copy.id || 'SUB_' + Math.random().toString(36).substring(2, 7);
-        if (!copy.name) copy.name = 'วิชาเรียน';
-      } else if (table === 'exams') {
-        copy.duration = Number(copy.duration || 30);
-        copy.randomize = Boolean(copy.randomize ?? true);
-        copy.is_active = Boolean(copy.is_active ?? true);
-        if (!copy.anti_cheat_level) copy.anti_cheat_level = 'strict';
-      } else if (table === 'questions') {
-        if (typeof copy.options === 'string') {
-          try { copy.options = JSON.parse(copy.options); } catch (e) { copy.options = [copy.options]; }
-        }
-        if (!Array.isArray(copy.options)) copy.options = [];
-        copy.correct_index = Number(copy.correct_index || 0);
-        copy.points = Number(copy.points || 1);
-      } else if (table === 'exam_results') {
-        copy.score = Number(copy.score || 0);
-        copy.total_score = Number(copy.total_score || copy.max_score || 0);
-        copy.max_score = Number(copy.max_score || copy.total_score || 0);
-        copy.percentage = Number(copy.percentage || (copy.total_score > 0 ? (copy.score / copy.total_score) * 100 : 0));
-        copy.submitted_at = copy.submitted_at || copy.submit_time || new Date().toISOString();
-        copy.submit_time = copy.submit_time || copy.submitted_at || new Date().toISOString();
-        copy.start_time = copy.start_time || copy.submit_time || new Date().toISOString();
-        if (typeof copy.answers === 'object') copy.answers = JSON.stringify(copy.answers);
-        if (typeof copy.details === 'object') copy.details = JSON.stringify(copy.details);
-        if (!copy.answers && copy.details) copy.answers = copy.details;
-        if (!copy.details && copy.answers) copy.details = copy.answers;
-        copy.status = copy.status || 'completed';
-        if (!copy.student_name) copy.student_name = 'นักเรียน';
-      } else if (table === 'cheat_logs') {
-        copy.violation_type = copy.violation_type || copy.reason || 'unknown';
-        copy.reason = copy.reason || copy.violation_type || 'unknown';
-        copy.timestamp = copy.timestamp || new Date().toISOString();
-        copy.details = copy.details || '';
-        if (!copy.student_name) copy.student_name = 'นักเรียน';
-      }
-      return copy;
-    });
-
-    // Attempt 1: Standard upsert
-    let { error } = await supabase.from(table).upsert(normalized);
-    if (!error) return { count: normalized.length, error: null };
-
-    // If table not found in Supabase schema cache
-    if (error && (error.message?.includes('Could not find the table') || error.message?.includes('schema cache') || error.code === 'PGRST204')) {
-      console.warn(`[Supabase] Table '${table}' not found in schema cache. Falling back to local durable storage.`);
-      return { count: normalized.length, error: null };
-    }
-
-    // Attempt 2: If UUID syntax error on id, strip non-UUID id fields
-    if (error && (error.message?.includes('uuid') || error.code === '22P02')) {
-      const strippedIdItems = normalized.map((item: any) => {
-        const copy = { ...item };
-        if (copy.id && !isUUID(copy.id)) {
-          delete copy.id;
-        }
-        return copy;
-      });
-      const res2 = await supabase.from(table).upsert(strippedIdItems);
-      if (!res2.error) return { count: strippedIdItems.length, error: null };
-      error = res2.error;
-    }
-
-    // Attempt 3: If missing columns error, try minimal core schema
-    if (error && (error.message?.includes('column') || error.code === '42703' || error.code === 'PGRST204')) {
-      const minimalItems = normalized.map((item: any) => {
-        if (table === 'students') {
-          return { student_id: item.student_id, name: item.name, password: item.password, class_group: item.class_group };
-        }
-        if (table === 'teachers') {
-          return { email: item.email, name: item.name, password: item.password, role: item.role };
-        }
-        if (table === 'subjects') {
-          return { code: item.code, name: item.name };
-        }
-        if (table === 'exams') {
-          return { subject_id: item.subject_id, title: item.title, type: item.type, duration: item.duration, randomize: item.randomize, is_active: item.is_active };
-        }
-        if (table === 'questions') {
-          return { exam_id: item.exam_id, question_text: item.question_text, options: item.options, correct_index: item.correct_index, points: item.points };
-        }
-        if (table === 'exam_results') {
-          return { student_id: item.student_id, student_name: item.student_name, exam_id: item.exam_id, score: item.score, total_score: item.total_score, answers: item.answers, status: item.status };
-        }
-        if (table === 'cheat_logs') {
-          return { student_id: item.student_id, student_name: item.student_name, exam_id: item.exam_id, violation_type: item.violation_type, details: item.details };
-        }
-        return item;
-      });
-      const res3 = await supabase.from(table).upsert(minimalItems);
-      if (!res3.error) return { count: minimalItems.length, error: null };
-      error = res3.error;
-    }
-
-    return { count: 0, error: error ? error.message : 'เกิดข้อผิดพลาดในการบันทึกข้อมูลเข้า Supabase' };
-  }
-
-  // ==========================================
   // FEATURE 2: DATABASE BACKUP & RESTORE API
   // ==========================================
   app.get('/api/backup/export', async (req, res) => {
@@ -2247,6 +2261,16 @@ ${answerKeyPrompt}
         writeOfflineDb(db);
       } catch (mergeErr) {
         console.error('Error merging back from Supabase in db-sync-to-cloud:', mergeErr);
+      }
+
+      const missingTables = errors.filter(e => e.includes('ยังไม่ถูกสร้าง'));
+      if (missingTables.length > 0) {
+        return res.status(400).json({
+          success: false,
+          hasMissingTables: true,
+          errors,
+          message: 'ยังไม่สามารถส่งข้อมูลขึ้น Cloud Supabase ได้ เนื่องจากโครงการ Supabase ยังไม่ได้สร้างตาราง (Tables) โปรดเปิดหน้า SQL Editor ใน Supabase Dashboard แล้วรันคำสั่ง SQL สร้างตารางก่อน'
+        });
       }
 
       res.json({
