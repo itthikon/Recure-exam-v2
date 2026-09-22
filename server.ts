@@ -212,7 +212,11 @@ async function loadCloudDbIntoMemory() {
               useSupabase = false;
               break;
             }
-            console.warn(`[Supabase] Error loading table '${col}':`, error.message);
+            if (error.message?.includes('Could not find the table') || error.message?.includes('schema cache') || error.code === 'PGRST204') {
+              console.warn(`[Supabase] Table '${col}' not found in schema cache. Using local durable storage fallback.`);
+            } else {
+              console.warn(`[Supabase] Error loading table '${col}':`, error.message);
+            }
           } else if (data && data.length > 0) {
             cloudMemoryDb[col] = data;
             console.log(`[Supabase] Loaded ${data.length} records for table '${col}'`);
@@ -275,7 +279,22 @@ function writeOfflineDb(data: any) {
       // ignore
     }
 
-    // Disable automatic background writes to Firestore to completely prevent RESOURCE_EXHAUSTED quota limits on free tier
+    // Automatic background sync to Supabase if connected
+    if (useSupabase && supabase) {
+      setTimeout(async () => {
+        try {
+          const tablesOrder = ['teachers', 'students', 'subjects', 'exams', 'questions', 'exam_results', 'cheat_logs', 'announcements', 'discussions', 'popup_messages'];
+          for (const table of tablesOrder) {
+            if (Array.isArray(data[table]) && data[table].length > 0) {
+              await supabase.from(table).upsert(data[table]);
+            }
+          }
+        } catch (syncErr) {
+          // ignore background sync errors
+        }
+      }, 300);
+    }
+
     return true;
   } catch (err) {
     console.error('Error writing cloud memory database:', err);
